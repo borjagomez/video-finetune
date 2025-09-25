@@ -1,0 +1,7 @@
+torch>=2.3
+diffusers>=0.30
+transformers>=4.43
+accelerate>=0.30
+safetensors
+Pillow
+opencv-python; platform_system != 'Darwin'  # optional, PIL is used primarily

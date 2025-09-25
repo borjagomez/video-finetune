@@ -1,0 +1,24 @@
+name: video-finetune
+channels:
+  - pytorch
+  - conda-forge
+dependencies:
+  - python=3.11
+  - pip
+  # Core runtime
+  - pytorch>=2.3
+  - torchvision
+  - torchaudio
+  - numpy
+  - pillow
+  - ffmpeg
+  # HF / training stack
+  - diffusers>=0.30
+  - transformers>=4.43
+  - accelerate>=0.30
+  - safetensors
+  # Optional: CLI tooling
+  - huggingface_hub
+  - pip:
+      # Keep pip section minimal; prefer conda-forge for Apple Silicon wheels
+      - opencv-python
