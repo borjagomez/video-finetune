@@ -16,6 +16,7 @@ What it does
 - Saves LoRA weights only (does not modify base model).
 """
 import argparse
+import time
 import json
 import math
 import os
@@ -312,6 +313,7 @@ def main():
         pipe.text_encoder.eval()
     if hasattr(pipe, "text_encoder_2") and isinstance(getattr(pipe, "text_encoder_2"), nn.Module):
         pipe.text_encoder_2.eval()
+    t0 = time.time()
     while step < args.max_steps:
         for batch in dl:
             videos = batch["video"].to(device)  # (B, C, T, H, W) after permute below
@@ -359,7 +361,19 @@ def main():
 
             step += 1
             if step % 10 == 0:
-                print(f"step {step}/{args.max_steps} loss={loss.item()*accum:.4f}")
+                elapsed = max(time.time() - t0, 1e-6)
+                steps_done = step
+                time_per_step = elapsed / max(steps_done, 1)
+                remaining = max(args.max_steps - steps_done, 0)
+                eta_sec = remaining * time_per_step
+                # human-readable ETA
+                m, s = divmod(int(eta_sec + 0.5), 60)
+                h, m = divmod(m, 60)
+                pct = 100.0 * steps_done / max(args.max_steps, 1)
+                print(
+                    f"step {step}/{args.max_steps} ({pct:.1f}%) "
+                    f"loss={loss.item()*accum:.4f} ETA {h:02d}:{m:02d}:{s:02d}"
+                )
             if step >= args.max_steps:
                 break
 
