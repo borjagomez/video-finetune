@@ -25,3 +25,9 @@ Preprocess videos (standardize) and Colab
 - Standardize videos to H.264/AAC and 1080p/30fps: `python tools/preprocess_videos.py --input_dir videos_finetune --output_dir data/videos_baseline --target_height 1080 --fps 30 --compute_checksums`
 - A copy‑paste Colab workflow is in `Colab Preprocessing Guide.md`.
 - A ready-to-run Colab notebook is included: `Colab Preprocessing Guide.ipynb`.
+
+Fine-tuning (LoRA)
+
+- Use `Colab Fine-Tuning.ipynb` to run a small LoRA fine-tune on your preprocessed/frames dataset. It expects:
+  - Model at `/content/drive/My Drive/HunyuanVideo-diffusers` (or a subfolder with `model_index.json`).
+  - Dataset manifest at `/content/drive/My Drive/data/dataset.jsonl` (from `scripts/prepare_dataset.py`).

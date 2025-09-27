@@ -18,13 +18,8 @@ drive.mount('/content/drive')
 ```python
 from pathlib import Path
 
-MOUNT = Path('/content/drive')
-# Prefer /content/drive/videos_finetune, fall back to /content/drive/MyDrive/videos_finetune
+MOUNT = Path('/content/drive') / 'My Drive'
 INPUT_DIR = MOUNT / 'videos_finetune'
-if not INPUT_DIR.exists():
-    alt = MOUNT / 'MyDrive' / 'videos_finetune'
-    if alt.exists():
-        INPUT_DIR = alt
 
 # Persist outputs on Drive
 OUTPUT_DIR = MOUNT / 'data' / 'videos_baseline'
@@ -34,10 +29,9 @@ print('Input dir:', INPUT_DIR)
 print('Output dir:', OUTPUT_DIR)
 ```
 
-List your Drive video folder(s):
+List your Drive video folder:
 ```bash
-ls -lh /content/drive/videos_finetune || true
-ls -lh /content/drive/MyDrive/videos_finetune || true
+ls -lh "/content/drive/My Drive/videos_finetune" || true
 ```
 
 ## Cell 4 — Fetch repo files (script only)
@@ -83,7 +77,7 @@ print('Running:', ' '.join(args))
 subprocess.run(args, check=True)
 ```
 
-Outputs are in `/content/drive/data/videos_baseline` and a JSONL manifest at `/content/drive/data/videos_manifest.jsonl`.
+Outputs are in `/content/drive/My Drive/data/videos_baseline` and a JSONL manifest at `/content/drive/My Drive/data/videos_manifest.jsonl`.
 
 ## Cell 6 — Verify one file
 ```python
@@ -114,4 +108,4 @@ print('Running:', ' '.join(args))
 subprocess.run(args, check=True)
 ```
 
-The frames manifest will be at `/content/drive/data/dataset.jsonl`.
+The frames manifest will be at `/content/drive/My Drive/data/dataset.jsonl`.
