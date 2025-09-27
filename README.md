@@ -19,3 +19,9 @@ Local model checkpoints
 - You can download the model locally (e.g., `models/tencent-HunyuanVideo`). Some repos place the Diffusers pipeline in a subfolder (commonly `diffusers/`).
 - If you see `no file named model_index.json`, point `--model_id` to the subfolder that contains `model_index.json`, for example:
   `--model_id models/tencent-HunyuanVideo/diffusers`
+
+Preprocess videos (standardize) and Colab
+
+- Standardize videos to H.264/AAC and 1080p/30fps: `python tools/preprocess_videos.py --input_dir videos_finetune --output_dir data/videos_baseline --target_height 1080 --fps 30 --compute_checksums`
+- A copy‑paste Colab workflow is in `Colab Preprocessing Guide.md`.
+- A ready-to-run Colab notebook is included: `Colab Preprocessing Guide.ipynb`.
