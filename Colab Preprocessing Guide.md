@@ -8,7 +8,7 @@ Use these cells in Google Colab to standardize your videos and (optionally) extr
 !ffmpeg -version | head -n 1
 ```
 
-## Cell 2 — Mount Drive (optional)
+## Cell 2 — Mount Drive
 ```python
 from google.colab import drive
 drive.mount('/content/drive')
@@ -18,21 +18,26 @@ drive.mount('/content/drive')
 ```python
 from pathlib import Path
 
-WORKDIR = Path('/content')
-INPUT_DIR = WORKDIR / 'videos_finetune'      # put your .mp4 files here
-OUTPUT_DIR = WORKDIR / 'data' / 'videos_baseline'
-INPUT_DIR.mkdir(parents=True, exist_ok=True)
+MOUNT = Path('/content/drive')
+# Prefer /content/drive/videos_finetune, fall back to /content/drive/MyDrive/videos_finetune
+INPUT_DIR = MOUNT / 'videos_finetune'
+if not INPUT_DIR.exists():
+    alt = MOUNT / 'MyDrive' / 'videos_finetune'
+    if alt.exists():
+        INPUT_DIR = alt
+
+# Persist outputs on Drive
+OUTPUT_DIR = MOUNT / 'data' / 'videos_baseline'
 OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
 print('Input dir:', INPUT_DIR)
 print('Output dir:', OUTPUT_DIR)
 ```
 
-You can upload files via the Colab file browser or copy from Drive, e.g.:
+List your Drive video folder(s):
 ```bash
-!cp -v \
-  /content/drive/MyDrive/path/to/your_videos/*.mp4 \
-  /content/videos_finetune/
+ls -lh /content/drive/videos_finetune || true
+ls -lh /content/drive/MyDrive/videos_finetune || true
 ```
 
 ## Cell 4 — Fetch repo files (script only)
@@ -64,31 +69,49 @@ Alternatively, if you have the repo in Colab already, just use:
 ```
 
 ## Cell 5 — Run preprocessing
-```bash
-!python tools/preprocess_videos.py \
-  --input_dir "/content/videos_finetune" \
-  --output_dir "/content/data/videos_baseline" \
-  --target_height 1080 \
-  --fps 30 \
-  --compute_checksums
+```python
+import subprocess
+args = [
+  'python','tools/preprocess_videos.py',
+  '--input_dir', str(INPUT_DIR),
+  '--output_dir', str(OUTPUT_DIR),
+  '--target_height','1080',
+  '--fps','30',
+  '--compute_checksums',
+]
+print('Running:', ' '.join(args))
+subprocess.run(args, check=True)
 ```
 
-Outputs are in `/content/data/videos_baseline` and a JSONL manifest at `/content/data/videos_manifest.jsonl`.
+Outputs are in `/content/drive/data/videos_baseline` and a JSONL manifest at `/content/drive/data/videos_manifest.jsonl`.
 
 ## Cell 6 — Verify one file
-```bash
-VID="$(ls -1 /content/data/videos_baseline/*.mp4 | head -n1)"
-echo "$VID"
-ffprobe -v error -show_streams -select_streams v:0 "$VID" | sed -n '1,40p'
+```python
+from pathlib import Path
+import subprocess
+vids = sorted(Path(OUTPUT_DIR).glob('*.mp4'))
+print('Found outputs:', len(vids))
+if vids:
+    first = str(vids[0])
+    print('Video:', first)
+    subprocess.run(['ffprobe','-v','error','-show_streams','-select_streams','v:0', first])
 ```
 
 ## Cell 7 — Optional: extract frames for training
 This uses the repo’s frame extractor to create a frames dataset and a dataset manifest.
-```bash
-!python scripts/prepare_dataset.py \
-  --videos_dir "/content/data/videos_baseline" \
-  --out_dir "/content/data/frames" \
-  --fps 2 --size 384
+```python
+from pathlib import Path
+import subprocess
+FRAMES_DIR = MOUNT / 'data' / 'frames'
+FRAMES_DIR.mkdir(parents=True, exist_ok=True)
+args = [
+  'python','scripts/prepare_dataset.py',
+  '--videos_dir', str(OUTPUT_DIR),
+  '--out_dir', str(FRAMES_DIR),
+  '--fps','2','--size','384'
+]
+print('Running:', ' '.join(args))
+subprocess.run(args, check=True)
 ```
 
-The frames manifest will be at `/content/data/dataset.jsonl`.
+The frames manifest will be at `/content/drive/data/dataset.jsonl`.
