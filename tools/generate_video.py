@@ -37,6 +37,9 @@ import torch
 import torch.nn as nn
 from PIL import Image
 
+# Ensure PyTorch allocator uses expandable segments unless already set
+os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
+
 
 # --- LoRA injection utilities (mirrors train_lora_hunyuanvideo.py) ---
 
@@ -253,7 +256,7 @@ class GenArgs:
     enable_vae_tiling: bool
 
 
-def load_pipeline(model_dir: Path, torch_dtype: Optional[torch.dtype] = None):
+def load_pipeline(model_dir: Path, torch_dtype: Optional[torch.dtype] = None, move_to_device: bool = True):
     try:
         from diffusers import HunyuanVideoPipeline  # type: ignore
         Pipe = HunyuanVideoPipeline
@@ -274,11 +277,13 @@ def load_pipeline(model_dir: Path, torch_dtype: Optional[torch.dtype] = None):
         kwargs["torch_dtype"] = torch_dtype
     pipe = Pipe.from_pretrained(str(model_id), **kwargs)
     device = torch.device("cuda" if torch.cuda.is_available() else ("mps" if torch.backends.mps.is_available() else "cpu"))
-    # If dtype was specified, ensure the modules are on device with that dtype
-    if torch_dtype is not None:
-        pipe.to(device, dtype=torch_dtype)
-    else:
-        pipe.to(device)
+    # Only move to device here when requested. If CPU offload is desired later,
+    # we should avoid moving the full model to GPU up front.
+    if move_to_device:
+        if torch_dtype is not None:
+            pipe.to(device, dtype=torch_dtype)
+        else:
+            pipe.to(device)
     pipe.set_progress_bar_config(disable=False)
     return pipe, device
 
@@ -522,28 +527,38 @@ def main():
     elif g.dtype == "float32":
         torch_dtype = torch.float32
 
-    pipe, device = load_pipeline(g.model_dir, torch_dtype=torch_dtype)
+    # If CPU offload is requested, avoid moving to GPU in load_pipeline
+    pipe, device = load_pipeline(g.model_dir, torch_dtype=torch_dtype, move_to_device=not g.enable_cpu_offload)
 
     # Memory-saving options
-    if g.enable_attention_slicing and hasattr(pipe, "enable_attention_slicing"):
-        pipe.enable_attention_slicing("max")
-    if g.enable_cpu_offload:
-        if hasattr(pipe, "enable_model_cpu_offload"):
-            try:
-                pipe.enable_model_cpu_offload()
-            except Exception:
-                if hasattr(pipe, "enable_sequential_cpu_offload"):
-                    pipe.enable_sequential_cpu_offload()
-    if g.enable_vae_slicing and hasattr(pipe, "enable_vae_slicing"):
-        try:
+    try:
+        if g.enable_attention_slicing and hasattr(pipe, "enable_attention_slicing"):
+            pipe.enable_attention_slicing("max")
+        if g.enable_cpu_offload:
+            if hasattr(pipe, "enable_model_cpu_offload"):
+                try:
+                    pipe.enable_model_cpu_offload()
+                except Exception:
+                    if hasattr(pipe, "enable_sequential_cpu_offload"):
+                        pipe.enable_sequential_cpu_offload()
+        else:
+            # If not offloading, ensure the pipe is on the intended device
+            if torch_dtype is not None:
+                pipe.to(device, dtype=torch_dtype)
+            else:
+                pipe.to(device)
+        if g.enable_vae_slicing and hasattr(pipe, "enable_vae_slicing"):
             pipe.enable_vae_slicing()
-        except Exception:
-            pass
-    if g.enable_vae_tiling and hasattr(getattr(pipe, "vae", None), "enable_tiling"):
-        try:
+        if g.enable_vae_tiling and hasattr(getattr(pipe, "vae", None), "enable_tiling"):
             pipe.vae.enable_tiling()
-        except Exception:
-            pass
+        # Try xformers if available
+        if hasattr(pipe, "enable_xformers_memory_efficient_attention"):
+            try:
+                pipe.enable_xformers_memory_efficient_attention()
+            except Exception:
+                pass
+    except Exception:
+        pass
     apply_lora(pipe, g.lora_weights)
 
     # Parse beats from prompt if requested and not using explicit beats JSON
