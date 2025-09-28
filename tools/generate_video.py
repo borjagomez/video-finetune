@@ -279,6 +279,12 @@ def apply_lora(pipe, lora_path: Path) -> None:
     if backbone is None:
         raise SystemExit("Could not locate video backbone (transformer/unet) in pipeline.")
 
+    # Capture current device of backbone before modification so we can restore
+    try:
+        current_device = next(backbone.parameters()).device
+    except Exception:
+        current_device = getattr(pipe, "device", torch.device("cpu"))
+
     # Use default r/alpha from saved ckpt if present
     ck = torch.load(lora_path, map_location="cpu")
     r = int(ck.get("rank", 4))
@@ -286,6 +292,12 @@ def apply_lora(pipe, lora_path: Path) -> None:
     replaced = inject_lora(backbone, r=r, alpha=alpha, target_substrings=("to_q", "to_k", "to_v", "to_out", "proj", "out_proj"))
     assigned, missing = load_lora_weights(backbone, lora_path)
     print(f"Injected {replaced} LoRA layers; loaded {assigned} tensors (missing: {missing})")
+
+    # Ensure newly added LoRA modules are on the same device as the backbone
+    try:
+        backbone.to(current_device)
+    except Exception:
+        pass
 
 
 def generate(pipe, prompt: str, width: int, height: int, num_frames: int, steps: int, guidance: float, seed: Optional[int]):
