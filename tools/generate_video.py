@@ -293,26 +293,33 @@ def generate(pipe, prompt: str, width: int, height: int, num_frames: int, steps:
     if seed is not None:
         generator = torch.Generator(device=pipe.device).manual_seed(int(seed))
     # Try robust call styles
-    try:
-        out = pipe(
-            prompt=prompt,
-            num_frames=num_frames,
-            height=height,
-            width=width,
-            num_inference_steps=steps,
-            guidance_scale=guidance,
-            generator=generator,
-        )
-    except TypeError:
-        out = pipe(
-            prompt,
-            num_frames=num_frames,
-            height=height,
-            width=width,
-            num_inference_steps=steps,
-            guidance_scale=guidance,
-            generator=generator,
-        )
+    tried = []
+    def attempt(kwargs):
+        tried.append(list(kwargs.keys()))
+        return pipe(**kwargs)
+    out = None
+    errors = []
+    for kwargs in [
+        dict(prompt=prompt, num_frames=num_frames, height=height, width=width, num_inference_steps=steps, guidance_scale=guidance, generator=generator),
+        dict(prompt=prompt, num_frames=num_frames, height=height, width=width, num_inference_steps=steps, generator=generator),
+        dict(prompt=prompt, num_frames=num_frames, height=height, width=width, guidance_scale=guidance, generator=generator),
+        dict(prompt=prompt, num_frames=num_frames, height=height, width=width, generator=generator),
+        dict(prompt=prompt, height=height, width=width, generator=generator),
+        dict(prompt=prompt, generator=generator),
+    ]:
+        try:
+            out = attempt(kwargs)
+            break
+        except TypeError as e:
+            errors.append(str(e))
+            continue
+    if out is None:
+        # final positional fallback
+        try:
+            out = pipe(prompt, height=height, width=width, num_frames=num_frames)
+        except Exception as e:
+            msg = "All call patterns failed. Errors: " + " | ".join(errors) + f" Last: {e}"
+            raise SystemExit(msg)
 
     # Diffusers typically returns an object with .frames or .images
     frames = None
@@ -366,22 +373,38 @@ def parse_prompt_beats(prompt: str, shots_base_dir: Optional[Path]) -> Tuple[str
     tag_re = re.compile(r"\[SHOT\s+([^\]]+)\]", re.IGNORECASE)
 
     def parse_attrs(attr_str: str) -> Optional[dict]:
-        try:
-            tokens = shlex.split(attr_str)
-        except Exception:
-            tokens = attr_str.split()
-        data = {}
-        for tok in tokens:
-            if "=" not in tok:
-                continue
-            k, v = tok.split("=", 1)
-            k = k.strip().lower()
-            v = v.strip().strip('"').strip("'")
-            data[k] = v
-        # map aliases
-        t = data.get("time") or data.get("at")
-        d = data.get("duration") or data.get("dur")
-        f = data.get("screenshot") or data.get("file") or data.get("path")
+        # First, try robust regex extraction that tolerates spaces in unquoted values
+        def rx(key_aliases: str):
+            return re.search(rf"(?i)(?:{key_aliases})\s*=\s*(.+?)(?=(?:\s+[a-zA-Z_]+\s*=)|$)", attr_str)
+
+        def clean(v: str) -> str:
+            return v.strip().strip('"').strip("'")
+
+        t_m = rx("time|at")
+        d_m = rx("duration|dur")
+        f_m = rx("screenshot|file|path")
+        t = clean(t_m.group(1)) if t_m else None
+        d = clean(d_m.group(1)) if d_m else None
+        f = clean(f_m.group(1)) if f_m else None
+
+        # Fallback to tokenization for simple cases
+        if not (t and d and f):
+            try:
+                tokens = shlex.split(attr_str)
+            except Exception:
+                tokens = attr_str.split()
+            data = {}
+            for tok in tokens:
+                if "=" not in tok:
+                    continue
+                k, v = tok.split("=", 1)
+                k = k.strip().lower()
+                v = clean(v)
+                data[k] = v
+            t = t or data.get("time") or data.get("at")
+            d = d or data.get("duration") or data.get("dur")
+            f = f or data.get("screenshot") or data.get("file") or data.get("path")
+
         t_sec = _parse_seconds(t) if t is not None else None
         d_sec = _parse_seconds(d) if d is not None else None
         if t_sec is None or d_sec is None or not f:
