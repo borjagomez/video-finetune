@@ -246,9 +246,14 @@ class GenArgs:
     beats_json: Optional[Path]
     beats_from_prompt: bool
     shots_base_dir: Optional[Path]
+    dtype: Optional[str]
+    enable_cpu_offload: bool
+    enable_attention_slicing: bool
+    enable_vae_slicing: bool
+    enable_vae_tiling: bool
 
 
-def load_pipeline(model_dir: Path):
+def load_pipeline(model_dir: Path, torch_dtype: Optional[torch.dtype] = None):
     try:
         from diffusers import HunyuanVideoPipeline  # type: ignore
         Pipe = HunyuanVideoPipeline
@@ -264,9 +269,16 @@ def load_pipeline(model_dir: Path):
             if sub.is_dir() and (sub / "model_index.json").exists():
                 model_id = sub
                 break
-    pipe = Pipe.from_pretrained(str(model_id), trust_remote_code=True, use_safetensors=True, token=token)
+    kwargs = dict(trust_remote_code=True, use_safetensors=True, token=token)
+    if torch_dtype is not None:
+        kwargs["torch_dtype"] = torch_dtype
+    pipe = Pipe.from_pretrained(str(model_id), **kwargs)
     device = torch.device("cuda" if torch.cuda.is_available() else ("mps" if torch.backends.mps.is_available() else "cpu"))
-    pipe.to(device)
+    # If dtype was specified, ensure the modules are on device with that dtype
+    if torch_dtype is not None:
+        pipe.to(device, dtype=torch_dtype)
+    else:
+        pipe.to(device)
     pipe.set_progress_bar_config(disable=False)
     return pipe, device
 
@@ -300,7 +312,7 @@ def apply_lora(pipe, lora_path: Path) -> None:
         pass
 
 
-def generate(pipe, prompt: str, width: int, height: int, num_frames: int, steps: int, guidance: float, seed: Optional[int]):
+def generate(pipe, prompt: str, width: int, height: int, num_frames: int, steps: int, guidance: float, seed: Optional[int], autocast_dtype: Optional[torch.dtype] = None):
     generator = None
     if seed is not None:
         generator = torch.Generator(device=pipe.device).manual_seed(int(seed))
@@ -320,7 +332,13 @@ def generate(pipe, prompt: str, width: int, height: int, num_frames: int, steps:
         dict(prompt=prompt, generator=generator),
     ]:
         try:
-            out = attempt(kwargs)
+            if autocast_dtype is not None:
+                device_type = pipe.device.type if hasattr(pipe, "device") else ("cuda" if torch.cuda.is_available() else "cpu")
+                with torch.inference_mode(), torch.autocast(device_type=device_type, dtype=autocast_dtype):
+                    out = attempt(kwargs)
+            else:
+                with torch.inference_mode():
+                    out = attempt(kwargs)
             break
         except TypeError as e:
             errors.append(str(e))
@@ -328,7 +346,13 @@ def generate(pipe, prompt: str, width: int, height: int, num_frames: int, steps:
     if out is None:
         # final positional fallback
         try:
-            out = pipe(prompt, height=height, width=width, num_frames=num_frames)
+            if autocast_dtype is not None:
+                device_type = pipe.device.type if hasattr(pipe, "device") else ("cuda" if torch.cuda.is_available() else "cpu")
+                with torch.inference_mode(), torch.autocast(device_type=device_type, dtype=autocast_dtype):
+                    out = pipe(prompt, height=height, width=width, num_frames=num_frames)
+            else:
+                with torch.inference_mode():
+                    out = pipe(prompt, height=height, width=width, num_frames=num_frames)
         except Exception as e:
             msg = "All call patterns failed. Errors: " + " | ".join(errors) + f" Last: {e}"
             raise SystemExit(msg)
@@ -454,6 +478,11 @@ def main():
     ap.add_argument("--screenshots", dest="screenshots_glob", default=None, help="Glob for screenshot images to append (used if --beats not provided)")
     ap.add_argument("--screenshot_duration", type=float, default=1.5, help="Seconds per screenshot segment (when appending or creating stills for beats)")
     ap.add_argument("--beats", dest="beats_json", default=None, help="JSON file describing insertion beats: [{time, duration, screenshot}]")
+    ap.add_argument("--dtype", default="auto", choices=["auto","float16","float32","bfloat16"], help="Inference dtype to reduce memory (float16/bfloat16 recommended on CUDA)")
+    ap.add_argument("--enable_cpu_offload", action="store_true", help="Enable model CPU offload to save VRAM")
+    ap.add_argument("--enable_attention_slicing", action="store_true", help="Enable attention slicing to save memory")
+    ap.add_argument("--enable_vae_slicing", action="store_true", help="Enable VAE slicing if supported")
+    ap.add_argument("--enable_vae_tiling", action="store_true", help="Enable VAE tiling if supported")
     ap.add_argument("--beats_from_prompt", action="store_true", help="Parse [SHOT ...] tags from the prompt to build beats if --beats not provided")
     ap.add_argument("--shots_base_dir", default=None, help="Base directory to resolve relative screenshot paths in prompt tags")
     args = ap.parse_args()
@@ -475,9 +504,46 @@ def main():
         beats_json=Path(args.beats_json) if args.beats_json else None,
         beats_from_prompt=bool(args.beats_from_prompt),
         shots_base_dir=Path(args.shots_base_dir) if args.shots_base_dir else None,
+        dtype=args.dtype if args.dtype and args.dtype != "auto" else None,
+        enable_cpu_offload=bool(args.enable_cpu_offload),
+        enable_attention_slicing=bool(args.enable_attention_slicing),
+        enable_vae_slicing=bool(args.enable_vae_slicing),
+        enable_vae_tiling=bool(args.enable_vae_tiling),
     )
 
-    pipe, device = load_pipeline(g.model_dir)
+    torch_dtype = None
+    autocast_dtype = None
+    if g.dtype == "float16":
+        torch_dtype = torch.float16
+        autocast_dtype = torch.float16
+    elif g.dtype == "bfloat16":
+        torch_dtype = torch.bfloat16
+        autocast_dtype = torch.bfloat16
+    elif g.dtype == "float32":
+        torch_dtype = torch.float32
+
+    pipe, device = load_pipeline(g.model_dir, torch_dtype=torch_dtype)
+
+    # Memory-saving options
+    if g.enable_attention_slicing and hasattr(pipe, "enable_attention_slicing"):
+        pipe.enable_attention_slicing("max")
+    if g.enable_cpu_offload:
+        if hasattr(pipe, "enable_model_cpu_offload"):
+            try:
+                pipe.enable_model_cpu_offload()
+            except Exception:
+                if hasattr(pipe, "enable_sequential_cpu_offload"):
+                    pipe.enable_sequential_cpu_offload()
+    if g.enable_vae_slicing and hasattr(pipe, "enable_vae_slicing"):
+        try:
+            pipe.enable_vae_slicing()
+        except Exception:
+            pass
+    if g.enable_vae_tiling and hasattr(getattr(pipe, "vae", None), "enable_tiling"):
+        try:
+            pipe.vae.enable_tiling()
+        except Exception:
+            pass
     apply_lora(pipe, g.lora_weights)
 
     # Parse beats from prompt if requested and not using explicit beats JSON
@@ -488,7 +554,7 @@ def main():
         if parsed_beats:
             print(f"Parsed {len(parsed_beats)} beats from prompt tags.")
 
-    frames = generate(pipe, clean_prompt, g.width, g.height, g.num_frames, g.steps, g.guidance, g.seed)
+    frames = generate(pipe, clean_prompt, g.width, g.height, g.num_frames, g.steps, g.guidance, g.seed, autocast_dtype=autocast_dtype)
     g.out.parent.mkdir(parents=True, exist_ok=True)
     save_video_frames_ffmpeg(frames, g.out, fps=g.fps)
     print(f"Saved generated video to {g.out}")
